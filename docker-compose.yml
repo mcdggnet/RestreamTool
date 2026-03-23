@@ -1,0 +1,13 @@
+services:
+  restream:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - hls_data:/hls
+      - audio_data:/audio
+    restart: unless-stopped
+
+volumes:
+  hls_data:
+  audio_data:
