@@ -5,6 +5,7 @@ services:
       - "8080:8080"
     volumes:
       - hls_data:/hls
+      - ./media:/media
     restart: unless-stopped
 
 volumes:
