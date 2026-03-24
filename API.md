@@ -16,18 +16,10 @@ http://localhost:8080
 
 ### Video — `GET /hls/stream.m3u8`
 
-H.264 video + AAC audio, transcoded to 360p. Standard HLS playlist — feed it into any HLS player (VLC, hls.js, ffplay, Safari, etc).
+Native quality, no re-encoding — the stream is passed through as-is into HLS segments. Feed it into any HLS player (VLC, hls.js, ffplay, Safari, etc).
 
 ```bash
 ffplay http://localhost:8080/hls/stream.m3u8
-```
-
-### Audio — `GET /audio/stream.m3u8`
-
-Opus audio only, delivered as HLS with fMP4 segments. Lower bandwidth than the video stream.
-
-```bash
-ffplay http://localhost:8080/audio/stream.m3u8
 ```
 
 ---
@@ -57,7 +49,7 @@ Returns the current state of the restreamer.
 
 ### `POST /stream`
 
-Set the source stream. Accepts Kick, Twitch, or YouTube URLs. Starts transcoding immediately and replaces any previously active stream.
+Set the source stream. Accepts Kick, Twitch, or YouTube URLs. Starts restreaming immediately and replaces any previously active stream.
 
 **Request body**
 ```json

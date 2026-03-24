@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,7 +31,6 @@ app.add_middleware(
 )
 
 app.mount("/hls", StaticFiles(directory="/hls"), name="hls")
-app.mount("/audio", StaticFiles(directory="/audio"), name="audio")
 
 
 class StreamRequest(BaseModel):
@@ -47,7 +45,6 @@ def index():
             "stop_stream": "DELETE /stream",
             "status": "GET /status",
             "video_hls": "GET /hls/stream.m3u8",
-            "audio_hls": "GET /audio/stream.m3u8",
         }
     }
 

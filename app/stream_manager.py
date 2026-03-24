@@ -8,7 +8,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 HLS_DIR = "/hls"
-AUDIO_DIR = "/audio"
 
 
 class StreamManager:
@@ -20,7 +19,6 @@ class StreamManager:
         self._running = True
 
         os.makedirs(HLS_DIR, exist_ok=True)
-        os.makedirs(AUDIO_DIR, exist_ok=True)
 
         self._start_placeholder()
 
@@ -96,8 +94,7 @@ class StreamManager:
             "-f", "lavfi", "-i", "color=c=black:s=640x360:r=25,format=yuv420p",
             # Audio input: silence
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-            *_video_hls_out("0:v", "1:a"),
-            *_audio_hls_out("1:a"),
+            *_hls_out_encode("0:v", "1:a"),
         ]
         logger.info("Starting placeholder stream")
         self._ffmpeg_proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
@@ -120,27 +117,22 @@ class StreamManager:
         ff_cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
             "-i", "pipe:0",
-            *_video_hls_out("0:v:0", "0:a:0"),
-            *_audio_hls_out("0:a:0"),
+            *_hls_out_copy(),
         ]
         self._ffmpeg_proc = subprocess.Popen(
             ff_cmd,
             stdin=self._streamlink_proc.stdout,
             stderr=subprocess.PIPE,
         )
-        logger.info("FFmpeg transcoder started")
+        logger.info("FFmpeg restream started")
 
 
 # ------------------------------------------------------------------ helpers
 
-def _video_hls_out(video_map: str, audio_map: str) -> list:
+def _hls_out_copy() -> list:
+    """Pass-through: no re-encode, native quality."""
     return [
-        "-map", video_map, "-map", audio_map,
-        "-c:v", "libx264",
-        "-vf", "scale=-2:360",
-        "-b:v", "500k", "-maxrate", "600k", "-bufsize", "1200k",
-        "-g", "50", "-sc_threshold", "0", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c", "copy",
         "-f", "hls",
         "-hls_time", "2",
         "-hls_list_size", "6",
@@ -150,17 +142,16 @@ def _video_hls_out(video_map: str, audio_map: str) -> list:
     ]
 
 
-def _audio_hls_out(audio_map: str) -> list:
+def _hls_out_encode(video_map: str, audio_map: str) -> list:
+    """Encode from synthetic lavfi inputs (placeholder only)."""
     return [
-        "-map", audio_map,
-        "-vn",
-        "-c:a", "libopus", "-b:a", "96k", "-ar", "48000",
+        "-map", video_map, "-map", audio_map,
+        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:a", "aac", "-b:a", "64k",
         "-f", "hls",
         "-hls_time", "2",
         "-hls_list_size", "6",
         "-hls_flags", "delete_segments+append_list+independent_segments",
-        "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", "init.mp4",
-        "-hls_segment_filename", f"{AUDIO_DIR}/seg_%03d.m4s",
-        f"{AUDIO_DIR}/stream.m3u8",
+        "-hls_segment_filename", f"{HLS_DIR}/seg_%03d.ts",
+        f"{HLS_DIR}/stream.m3u8",
     ]
