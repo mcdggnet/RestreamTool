@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -11,8 +12,62 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
+
+
+def _log_versions():
+    """Log tool versions and codec support at startup to catch env differences."""
+    for tool in ("ffmpeg", "streamlink"):
+        path = shutil.which(tool)
+        if not path:
+            logger.error("DIAG: %s not found in PATH", tool)
+            continue
+        try:
+            out = subprocess.check_output(
+                [tool, "--version"], stderr=subprocess.STDOUT, text=True
+            ).splitlines()[0]
+            logger.info("DIAG: %s -> %s (at %s)", tool, out, path)
+        except Exception as e:
+            logger.error("DIAG: failed to get %s version: %s", tool, e)
+
+    # Check libx264 is available in ffmpeg
+    try:
+        codecs = subprocess.check_output(
+            ["ffmpeg", "-hide_banner", "-encoders"], stderr=subprocess.STDOUT, text=True
+        )
+        for codec in ("libx264", "aac"):
+            status = "available" if codec in codecs else "MISSING"
+            logger.info("DIAG: ffmpeg codec %s: %s", codec, status)
+    except Exception as e:
+        logger.error("DIAG: failed to check ffmpeg encoders: %s", e)
+
+
+def _log_dir(path: str):
+    """Check a directory exists and is writable."""
+    exists = os.path.isdir(path)
+    writable = os.access(path, os.W_OK) if exists else False
+    logger.info("DIAG: dir %s — exists=%s writable=%s", path, exists, writable)
+
+
+def _drain_stderr(proc: subprocess.Popen, label: str):
+    """
+    Read stderr from a subprocess in a background thread and log each line.
+
+    Critical: if stderr=PIPE and nothing reads it, the OS pipe buffer (~64 KB)
+    fills up and the subprocess blocks/deadlocks. This is the most common cause
+    of ffmpeg silently dying in prod under load.
+    """
+    def _read():
+        for raw in proc.stderr:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                logger.debug("[%s stderr] %s", label, line)
+        logger.info("[%s] stderr pipe closed (process likely exited)", label)
+    threading.Thread(target=_read, daemon=True).start()
 
 HLS_DIR = "/hls"
 MEDIA_DIR = "/media"
@@ -39,8 +94,12 @@ class StreamManager:
         self._streamlink: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
 
+        _log_versions()
+
         os.makedirs(HLS_DIR, exist_ok=True)
         os.makedirs(MEDIA_DIR, exist_ok=True)
+        _log_dir(HLS_DIR)
+        _log_dir(MEDIA_DIR)
 
         with self._lock:
             self._restart_locked()
@@ -91,7 +150,11 @@ class StreamManager:
             time.sleep(5)
             with self._lock:
                 if self._ffmpeg is None or self._ffmpeg.poll() is not None:
-                    logger.warning("FFmpeg exited — restarting")
+                    code = self._ffmpeg.returncode if self._ffmpeg else "n/a"
+                    logger.warning(
+                        "FFmpeg exited (returncode=%s, source_type=%s, source=%s) — restarting",
+                        code, self._source_type, self._source,
+                    )
                     self._restart_locked()
 
     def _restart_locked(self):
@@ -124,21 +187,29 @@ class StreamManager:
             "-c:a", "aac", "-b:a", "64k",
             *_HLS_OUT,
         ]
-        logger.info("Starting placeholder")
+        logger.info("Starting placeholder — cmd: %s", " ".join(cmd))
         self._ffmpeg = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+        _drain_stderr(self._ffmpeg, "ffmpeg/placeholder")
 
     def _start_live_locked(self):
+        sl_cmd = ["streamlink", "--stdout", "--loglevel", "warning", self._source, "best"]
+        logger.info("Starting streamlink — cmd: %s", " ".join(sl_cmd))
         self._streamlink = subprocess.Popen(
-            ["streamlink", "--stdout", "--loglevel", "error", self._source, "best"],
+            sl_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        _drain_stderr(self._streamlink, "streamlink")
+
+        ff_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                  "-i", "pipe:0", "-c", "copy", *_HLS_OUT]
+        logger.info("Starting ffmpeg — cmd: %s", " ".join(ff_cmd))
         self._ffmpeg = subprocess.Popen(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
-             "-i", "pipe:0", "-c", "copy", *_HLS_OUT],
+            ff_cmd,
             stdin=self._streamlink.stdout,
             stderr=subprocess.PIPE,
         )
+        _drain_stderr(self._ffmpeg, "ffmpeg/live")
         logger.info("Live stream started: %s", self._source)
 
     def _start_file_locked(self):
@@ -149,8 +220,10 @@ class StreamManager:
             "-c", "copy",
             *_HLS_OUT,
         ]
-        logger.info("File playback started: %s", self._source)
+        logger.info("Starting file playback — cmd: %s", " ".join(cmd))
         self._ffmpeg = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+        _drain_stderr(self._ffmpeg, "ffmpeg/file")
+        logger.info("File playback started: %s", self._source)
 
 
 # ---------------------------------------------------------------------------
