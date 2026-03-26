@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 
 def _log_versions():
     """Log tool versions and codec support at startup to catch env differences."""
-    for tool in ("ffmpeg", "streamlink"):
+    for tool, flag in (("ffmpeg", "-version"), ("streamlink", "--version")):
         path = shutil.which(tool)
         if not path:
             logger.error("DIAG: %s not found in PATH", tool)
             continue
         try:
             out = subprocess.check_output(
-                [tool, "--version"], stderr=subprocess.STDOUT, text=True
+                [tool, flag], stderr=subprocess.STDOUT, text=True
             ).splitlines()[0]
             logger.info("DIAG: %s -> %s (at %s)", tool, out, path)
         except Exception as e:
@@ -65,8 +65,9 @@ def _drain_stderr(proc: subprocess.Popen, label: str):
         for raw in proc.stderr:
             line = raw.decode(errors="replace").rstrip()
             if line:
-                logger.debug("[%s stderr] %s", label, line)
-        logger.info("[%s] stderr pipe closed (process likely exited)", label)
+                logger.warning("[%s] %s", label, line)
+        rc = proc.wait()
+        logger.info("[%s] process exited (returncode=%s)", label, rc)
     threading.Thread(target=_read, daemon=True).start()
 
 HLS_DIR = "/hls"
@@ -192,7 +193,11 @@ class StreamManager:
         _drain_stderr(self._ffmpeg, "ffmpeg/placeholder")
 
     def _start_live_locked(self):
-        sl_cmd = ["streamlink", "--stdout", "--loglevel", "warning", self._source, "best"]
+        sl_cmd = [
+            "streamlink", "--stdout", "--loglevel", "warning",
+            "--retry-streams", "1", "--retry-max", "0",  # loop forever on Kick segment gaps
+            self._source, "best",
+        ]
         logger.info("Starting streamlink — cmd: %s", " ".join(sl_cmd))
         self._streamlink = subprocess.Popen(
             sl_cmd,
